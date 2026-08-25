@@ -5,11 +5,11 @@ travels in struct_data.title only; no other struct_data fields are ever set, per
 build spec section 14 ("do not persist structData, participant lists, ... or
 other searchable sidecars").
 
-NOTE: this is written against the documented google-cloud-discoveryengine v1
-Document/DocumentService shape, but the exact field names for a custom
-unstructured store's ACL info can shift between API versions. Since this can't
-be exercised against a live project from here, verify update_document/AclInfo
-against the current API on first deploy (see README) before relying on it.
+NOTE: DocumentServiceClient.update_document()'s flattened kwargs don't include
+allow_missing, even though the underlying UpdateDocumentRequest message has the
+field (confirmed against the installed google-cloud-discoveryengine build) - so
+every update_document call here goes through an explicit request object instead
+of the convenience kwargs.
 """
 
 from typing import Iterable, List, Optional
@@ -60,7 +60,8 @@ def upsert(document_id: str, content_uri: str, mime_type: str, title: str, reade
         struct_data={"title": title},
         acl_info=_acl_info(readers),
     )
-    _get_client().update_document(document=document, allow_missing=True)
+    request = de.UpdateDocumentRequest(document=document, allow_missing=True)
+    _get_client().update_document(request=request)
 
 
 def delete(document_id: str) -> None:
@@ -70,4 +71,5 @@ def delete(document_id: str) -> None:
 def patch_acl(document_id: str, readers: List[str]) -> None:
     document = de.Document(name=_document_name(document_id), acl_info=_acl_info(readers))
     update_mask = field_mask_pb2.FieldMask(paths=["acl_info"])
-    _get_client().update_document(document=document, update_mask=update_mask, allow_missing=True)
+    request = de.UpdateDocumentRequest(document=document, update_mask=update_mask, allow_missing=True)
+    _get_client().update_document(request=request)
