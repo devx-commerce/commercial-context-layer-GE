@@ -1,0 +1,27 @@
+# Paste this at https://api.slack.com/apps -> "Create New App" -> "From a manifest".
+#
+# event_subscriptions.request_url is deliberately omitted here: setting it triggers
+# Slack's URL-verification challenge immediately, which our webhook handler can only
+# pass once the real signing secret is already stored in Secret Manager and the
+# service has picked it up. Add the request URL manually afterwards, in this app's
+# "Event Subscriptions" page, once that's done — see README.md step 8.
+display_information:
+  name: Commercial Context Layer POC
+oauth_config:
+  scopes:
+    bot:
+      - channels:read
+      - channels:history
+      - channels:join
+      - groups:read
+      - groups:history
+      - files:read
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels
+      - message.groups
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
