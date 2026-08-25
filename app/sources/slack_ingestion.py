@@ -129,11 +129,10 @@ def _ts_to_iso(ts: str) -> str:
 
 
 def handle_event_payload(payload: dict, config: Config) -> Optional[dict]:
-    """Returns a JSON-able dict to respond with (e.g. the URL-verification
-    challenge), or None when a plain 200 ack is all that's needed."""
-    if payload.get("type") == "url_verification":
-        return {"challenge": payload.get("challenge")}
-
+    """Returns a JSON-able dict to respond with, or None when a plain 200 ack is
+    all that's needed. Callers must answer the URL-verification handshake
+    (payload["type"] == "url_verification") before calling this — it doesn't
+    depend on config and shouldn't be gated behind a config load succeeding."""
     if payload.get("type") != "event_callback":
         return None
 

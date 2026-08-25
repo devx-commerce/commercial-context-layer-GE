@@ -54,6 +54,11 @@ async def slack_events(request: Request) -> JSONResponse:
 
     payload = await request.json()
 
+    # Slack's URL-verification handshake doesn't touch config at all — it must
+    # be answered before any config load, not just before a successful one.
+    if payload.get("type") == "url_verification":
+        return JSONResponse({"challenge": payload.get("challenge")})
+
     try:
         config, _, _ = load_config_and_users()
     except ConfigError:
