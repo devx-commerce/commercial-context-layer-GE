@@ -191,9 +191,11 @@ echo -n '{"client_id":"<id>","client_secret":"<secret>"}' | \
 ### 7. Create the Slack app (console)
 
 Go to <https://api.slack.com/apps> → **Create New App** → **From a manifest**, and paste
-`slack-app-manifest.yaml` from this repo. It intentionally omits the Events API request
-URL — see the comment in that file for why (signature verification would fail before
-the real signing secret is in place). Install the app to your workspace, then:
+`slack-app-manifest.yaml` from this repo. It intentionally omits `event_subscriptions`
+entirely — see the comment in that file for why (Slack requires bot event types to be
+paired with a Request URL or Socket Mode at declaration time, and we can't supply a
+real Request URL until the real signing secret is in place). Install the app to your
+workspace, then:
 
 ```bash
 echo -n "<bot-token-starting-with-xoxb->" | gcloud secrets versions add slack-bot-token --data-file=-
@@ -207,8 +209,10 @@ caches mean a live instance won't otherwise see a new secret version):
 gcloud run deploy "$SERVICE_NAME" --source . --region="$REGION"
 ```
 
-Now go back to the Slack app's **Event Subscriptions** page and set the request URL to
-`${SERVICE_URL}/webhooks/slack/events` — Slack's verification challenge should now pass.
+Now go back to the Slack app's **Event Subscriptions** page and: turn Events on, set the
+request URL to `${SERVICE_URL}/webhooks/slack/events` (Slack's verification challenge
+should now pass since the real signing secret is in place), then add `message.channels`
+and `message.groups` under bot events, and save.
 
 ### 8. Second deploy (full env, including the scheduler audience)
 

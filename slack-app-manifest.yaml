@@ -1,12 +1,21 @@
 # Paste this at https://api.slack.com/apps -> "Create New App" -> "From a manifest".
 #
-# event_subscriptions.request_url is deliberately omitted here: setting it triggers
-# Slack's URL-verification challenge immediately, which our webhook handler can only
-# pass once the real signing secret is already stored in Secret Manager and the
-# service has picked it up. Add the request URL manually afterwards, in this app's
-# "Event Subscriptions" page, once that's done — see README.md step 8.
+# event_subscriptions is deliberately left out entirely: Slack's schema requires
+# bot_events to be paired with either a Request URL or Socket Mode at the time
+# they're declared. We can't supply a real Request URL yet (setting one triggers
+# an immediate signature-verification challenge, which only passes once the real
+# signing secret is stored in Secret Manager and picked up by the running
+# service), and Socket Mode is a different, persistent-websocket connection model
+# that doesn't match this app's HTTP-webhook design. So: install the app from
+# this manifest first, store its bot token + signing secret, then add both the
+# bot event subscriptions AND the Request URL together afterwards on this app's
+# "Event Subscriptions" page — see README.md step 8.
 display_information:
   name: Commercial Context Layer POC
+features:
+  bot_user:
+    display_name: Commercial Context Layer
+    always_online: false
 oauth_config:
   scopes:
     bot:
@@ -18,10 +27,6 @@ oauth_config:
       - files:read
       - users:read
 settings:
-  event_subscriptions:
-    bot_events:
-      - message.channels
-      - message.groups
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
