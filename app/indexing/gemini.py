@@ -14,6 +14,7 @@ of the convenience kwargs.
 
 from typing import Iterable, List, Optional
 
+from google.api_core.exceptions import NotFound
 from google.cloud import discoveryengine_v1 as de
 from google.protobuf import field_mask_pb2
 
@@ -68,8 +69,16 @@ def delete(document_id: str) -> None:
     _get_client().delete_document(name=_document_name(document_id))
 
 
-def patch_acl(document_id: str, readers: List[str]) -> None:
+def patch_acl(document_id: str, readers: List[str]) -> bool:
+    """Patch only acl_info. Returns False when the document isn't indexed yet
+    (despite allow_missing, the server refuses a masked update on a missing
+    document) — safe to skip: its evidence is still in the pending queue and
+    the eventual upsert computes fresh readers anyway."""
     document = de.Document(name=_document_name(document_id), acl_info=_acl_info(readers))
     update_mask = field_mask_pb2.FieldMask(paths=["acl_info"])
     request = de.UpdateDocumentRequest(document=document, update_mask=update_mask, allow_missing=True)
-    _get_client().update_document(request=request)
+    try:
+        _get_client().update_document(request=request)
+    except NotFound:
+        return False
+    return True

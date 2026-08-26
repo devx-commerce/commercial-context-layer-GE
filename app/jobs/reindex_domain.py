@@ -20,19 +20,24 @@ def run(domain: str) -> dict:
         raise ValueError(f"unknown account domain: {domain}")
 
     patched = 0
+    skipped = 0
 
     for channel_id, channel in config.slack_channels.items():
         if channel.account_domain != domain:
             continue
         readers = sorted(acl.slack_readers(channel_id, config))
         for document_id in collect_document_paths(f"approved/{domain}/slack/{channel_id}/"):
-            gemini.patch_acl(document_id, readers)
-            patched += 1
+            if gemini.patch_acl(document_id, readers):
+                patched += 1
+            else:
+                skipped += 1  # not indexed yet — still in the pending queue
 
     for document_id in collect_document_paths(f"approved/{domain}/gmail/"):
         owners = _merge_owner(document_id, None)
         readers = sorted(acl.gmail_readers(owners, config))
-        gemini.patch_acl(document_id, readers)
-        patched += 1
+        if gemini.patch_acl(document_id, readers):
+            patched += 1
+        else:
+            skipped += 1
 
-    return {"domain": domain, "documents_patched": patched}
+    return {"domain": domain, "documents_patched": patched, "documents_skipped_unindexed": skipped}
