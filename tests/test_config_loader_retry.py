@@ -32,10 +32,10 @@ def test_upsert_user_record_retries_past_a_generation_conflict(monkeypatch):
 
     def mutate(existing):
         assert existing is None
-        return {"teams": ["base"], "gmail_secret": None}
+        return {"gmail_secret": None}
 
     record = upsert_user_record("new-user@devx.com", mutate)
 
     assert attempts["count"] == 2  # first attempt lost the race, second succeeded
-    assert record == {"teams": ["base"], "gmail_secret": None}
+    assert record == {"gmail_secret": None}
     assert state["data"]["new-user@devx.com"] == record

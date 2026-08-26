@@ -26,6 +26,9 @@ oauth_config:
       - groups:history
       - files:read
       - users:read
+      # users:read.email: required to map channel members to workspace emails,
+      # which is what document ACLs are made of.
+      - users:read.email
 settings:
   org_deploy_enabled: false
   socket_mode_enabled: false

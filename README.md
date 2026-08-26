@@ -1,9 +1,21 @@
 # Commercial Context Layer — POC
 
 Cross-source (Gmail + Slack) search over policy-approved commercial content, indexed
-into a Gemini Enterprise custom data store with per-team ACLs, answered by the native
-Gemini Enterprise app with citations. Full design: `personal-notes/GE Commercial
-Context Layer POC - Build Spec.md` in the parent repo.
+into a Gemini Enterprise custom data store with per-document ACLs, answered by the
+native Gemini Enterprise app with citations.
+
+**ACL model (v2 — channel membership + superusers):**
+
+- A Slack-derived document is readable by the *current members* of its channel
+  (mapped to workspace emails, internal domains only). Membership changes are picked
+  up via `member_joined_channel` / `member_left_channel` events, which queue an ACL
+  resync for that channel's documents.
+- A Gmail-derived document is readable by the onboarded mailbox(es) it was ingested
+  from.
+- `config.superusers` can read everything, regardless of membership or ownership.
+- Requires the project-level Discovery Engine identity config to be Google identity
+  (`idpConfig.idpType: GSUITE`) — one IdP per project; a project already using
+  third-party workforce identity for other ACL data stores cannot host this store.
 
 This README is a runnable setup/deploy checklist, not just a description. Commands
 assume **Cloud Shell** (has `gcloud`, Python, and a container builder preinstalled —
@@ -211,8 +223,9 @@ gcloud run deploy "$SERVICE_NAME" --source . --region="$REGION"
 
 Now go back to the Slack app's **Event Subscriptions** page and: turn Events on, set the
 request URL to `${SERVICE_URL}/webhooks/slack/events` (Slack's verification challenge
-should now pass since the real signing secret is in place), then add `message.channels`
-and `message.groups` under bot events, and save.
+should now pass since the real signing secret is in place), then add `message.channels`,
+`message.groups`, `member_joined_channel`, and `member_left_channel` under bot events,
+and save.
 
 ### 8. Second deploy (full env, including the scheduler audience)
 
@@ -253,8 +266,8 @@ gcloud scheduler jobs create http process-pending \
   --oidc-service-account-email="$SCHEDULER_SA" --oidc-token-audience="$SERVICE_URL"
 ```
 
-To manually trigger a reindex after changing a team/account's ACL-relevant config
-(grant your own account `roles/iam.serviceAccountTokenCreator` on `$SCHEDULER_SA` first):
+To manually trigger an ACL reindex (e.g. after editing `superusers`) — grant your own
+account `roles/iam.serviceAccountTokenCreator` on `$SCHEDULER_SA` first:
 
 ```bash
 TOKEN=$(gcloud auth print-identity-token --impersonate-service-account="$SCHEDULER_SA" --audiences="$SERVICE_URL")
@@ -276,12 +289,9 @@ consent flow. Confirm `state/users.json` in the bucket now has their entry, and 
 the initial backfill scan ran (check Cloud Run logs, or list
 `gs://${BUCKET}/approved/`).
 
-For a Slack-only user who never runs Gmail OAuth:
-
-```bash
-PROJECT_ID="$PROJECT_ID" GCS_BUCKET="$BUCKET" \
-  python -m scripts.upsert_user new-user@devx.com --teams enterprise-north
-```
+Slack-only users need no registration at all — access is derived live from channel
+membership. `scripts/upsert_user.py` remains only for pre-registering or repairing a
+Gmail user record by hand.
 
 ### 12. Smoke test end to end
 

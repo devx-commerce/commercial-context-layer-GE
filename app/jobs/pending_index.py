@@ -4,35 +4,71 @@ Every producer (Gmail/Slack ingestion) only ever writes evidence to GCS plus a
 pending operation pointer; this job is where every actual Gemini upsert/delete
 happens. Concentrating it here means there is exactly one retry path: leave the
 pointer in place on failure and let the next 5-minute run (Cloud Scheduler) try
-again. There's no per-op attempt counter — the strict pending/operations schema
-(build spec section 6) has no room for one — so this relies on the Google client
-libraries' own request-level exponential backoff for transient errors, plus the
-fixed 5-minute scheduler cadence as the cross-run retry loop. That's a deliberate
-POC simplification instead of hand-rolling stateful backoff tracking.
+again.
+
+Readers are derived here, at index time:
+  - Slack documents (approved/<domain>/slack/<channel>/...): live channel
+    membership + superusers.
+  - Gmail documents (approved/<domain>/gmail/...): the union of onboarded
+    mailboxes that ingested this document (state/owners/<doc>.json) + superusers.
 """
 
 import hashlib
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 
 from app.config_loader import ConfigError, load_config_and_users
 from app.indexing import gemini
-from app.models import PendingOperation
+from app.models import Config, PendingOperation
 from app.policy import acl
 from app.sources import mime, slack_client
 from app.storage import gcs
 
 logger = logging.getLogger(__name__)
 
+_OWNERS_PREFIX = "state/owners/"
 
-def _path_info(path: str) -> Tuple[str, bool]:
-    """Returns (account_domain, is_attachment) from an approved/ path."""
+
+def _owners_path(document_id: str) -> str:
+    return f"{_OWNERS_PREFIX}{document_id}.json"
+
+
+def _merge_owner(document_id: str, owner_email: Optional[str], max_retries: int = 5) -> List[str]:
+    """Add owner_email to the document's accumulated owner set (generation-safe)
+    and return the full set. A document can be owned by several mailboxes when
+    more than one onboarded user has the same email in their inbox."""
+    for _ in range(max_retries):
+        obj = gcs.read_json(_owners_path(document_id))
+        owners = set(obj.data.get("owners", [])) if obj is not None else set()
+        generation = obj.generation if obj is not None else 0
+
+        if owner_email is None or owner_email in owners:
+            return sorted(owners)
+
+        owners.add(owner_email)
+        try:
+            gcs.write_json(_owners_path(document_id), {"owners": sorted(owners)}, if_generation_match=generation)
+            return sorted(owners)
+        except gcs.PreconditionFailed:
+            continue
+    raise RuntimeError(f"failed to merge owner for document {document_id} (concurrent update)")
+
+
+def _split_approved_path(path: str) -> Tuple[str, str, List[str]]:
+    """Returns (account_domain, source, remaining_segments) for an approved/ path."""
     segments = path.split("/")
-    account_domain = segments[1]
-    is_attachment = "attachments" in segments
-    return account_domain, is_attachment
+    return segments[1], segments[2], segments[3:]
+
+
+def _readers_for_path(path: str, config: Config, owner_email: Optional[str], document_id: str) -> List[str]:
+    _, source, rest = _split_approved_path(path)
+    if source == "slack":
+        channel_id = rest[0]
+        return sorted(acl.slack_readers(channel_id, config))
+    owners = _merge_owner(document_id, owner_email)
+    return sorted(acl.gmail_readers(owners, config))
 
 
 def _recover_title(path: str) -> str:
@@ -58,15 +94,14 @@ def _mime_type_for_path(path: str) -> str:
 
 
 def _handle_upsert(op: PendingOperation) -> None:
-    config, users, _ = load_config_and_users()
+    config, _, _ = load_config_and_users()
     path = gcs.gs_uri_to_path(op.content_uri)
-    account_domain, _ = _path_info(path)
-    account = config.accounts.get(account_domain)
-    if account is None:
+    account_domain, _, _ = _split_approved_path(path)
+    if account_domain not in config.accounts:
         logger.warning("pending_upsert_unknown_account_domain")
         return
 
-    readers = sorted(acl.readers_for_account(account, config.teams, users))
+    readers = _readers_for_path(path, config, op.owner_email, op.document_id)
     title = _recover_title(path)
     mime_type = _mime_type_for_path(path)
     gemini.upsert(op.document_id, op.content_uri, mime_type, title, readers)
@@ -76,11 +111,13 @@ def _handle_delete(op: PendingOperation) -> None:
     gemini.delete(op.document_id)
     if op.content_uri:
         gcs.delete(gcs.gs_uri_to_path(op.content_uri))
+        gcs.delete(_owners_path(op.document_id))
 
 
 def _handle_fetch_slack_attachment(op: PendingOperation) -> None:
-    config, users, _ = load_config_and_users()
-    channel = config.slack_channels.get(op.slack_channel_id or "")
+    config, _, _ = load_config_and_users()
+    channel_id = op.slack_channel_id or ""
+    channel = config.slack_channels.get(channel_id)
     if channel is None:
         logger.warning("pending_fetch_attachment_unknown_channel")
         return
@@ -99,16 +136,44 @@ def _handle_fetch_slack_attachment(op: PendingOperation) -> None:
         f"{op.parent_document_id}:{hashlib.sha256(data).hexdigest()}:{normalized_filename}".encode("utf-8")
     ).hexdigest()
     path = (
-        f"approved/{channel.account_domain}/slack/{op.parent_document_id}/attachments/"
+        f"approved/{channel.account_domain}/slack/{channel_id}/{op.parent_document_id}/attachments/"
         f"{attachment_document_id}.{ext}"
     )
     gcs.write_bytes(
         path, data, content_type=mime_type, content_disposition=f'attachment; filename="{normalized_filename}"'
     )
 
-    account = config.accounts[channel.account_domain]
-    readers = sorted(acl.readers_for_account(account, config.teams, users))
+    readers = sorted(acl.slack_readers(channel_id, config))
     gemini.upsert(attachment_document_id, gcs.content_uri(path), mime_type, normalized_filename, readers)
+
+
+def collect_document_paths(prefix: str) -> dict:
+    """{document_id: evidence_path} for everything under an approved/ prefix.
+    Message documents live at .../<doc_id>/message.html; attachment documents
+    are named by their own ID at .../attachments/<doc_id>.<ext>."""
+    paths_by_document_id = {}
+    for path in gcs.list_prefix(prefix):
+        if path.endswith("message.html"):
+            paths_by_document_id[path.split("/")[-2]] = path
+        elif "/attachments/" in path:
+            filename = path.rsplit("/", 1)[-1]
+            paths_by_document_id[filename.rsplit(".", 1)[0]] = path
+    return paths_by_document_id
+
+
+def _handle_resync_channel_acl(op: PendingOperation) -> None:
+    config, _, _ = load_config_and_users()
+    channel_id = op.slack_channel_id or ""
+    channel = config.slack_channels.get(channel_id)
+    if channel is None:
+        logger.warning("pending_resync_unknown_channel")
+        return
+
+    readers = sorted(acl.slack_readers(channel_id, config))
+    document_ids = collect_document_paths(f"approved/{channel.account_domain}/slack/{channel_id}/")
+    for document_id in document_ids:
+        gemini.patch_acl(document_id, readers)
+    logger.info("channel_acl_resynced documents=%d", len(document_ids))
 
 
 def process_all_pending() -> None:
@@ -129,6 +194,8 @@ def process_all_pending() -> None:
                 _handle_delete(op)
             elif op.operation == "fetch_slack_attachment":
                 _handle_fetch_slack_attachment(op)
+            elif op.operation == "resync_channel_acl":
+                _handle_resync_channel_acl(op)
             gcs.delete_pending_operation(operation_id)
         except Exception:
             logger.exception("pending_operation_failed_will_retry")

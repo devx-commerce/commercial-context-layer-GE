@@ -1,37 +1,38 @@
-"""POST /internal/reindex-domain?domain=<domain> — build spec section 8.
+"""POST /internal/reindex-domain?domain=<domain> — ACL-only reconcile.
 
 Recomputes readers for every document under approved/<domain>/** and patches
-just the ACL field on each (no title needed — see the plan's note on why a
-partial acl_info-only patch sidesteps the "no persisted title" constraint).
-Document IDs are recovered from the GCS path itself: no sidecar list is needed
-because the layout embeds the document ID in the path (section 6). This is a
-rare, admin-triggered action, so it runs synchronously rather than going
-through the pending queue.
+just the ACL field on each. Slack documents get live channel membership +
+superusers (per channel — the channel ID is embedded in the evidence path);
+Gmail documents get their accumulated owners + superusers. This is the manual
+safety net behind the event-driven resync (member_joined/left_channel), e.g.
+after editing the superusers list.
 """
 
 from app.config_loader import load_config_and_users
 from app.indexing import gemini
+from app.jobs.pending_index import _merge_owner, collect_document_paths
 from app.policy import acl
-from app.storage import gcs
 
 
 def run(domain: str) -> dict:
-    config, users, _ = load_config_and_users()
-    account = config.accounts.get(domain)
-    if account is None:
+    config, _, _ = load_config_and_users()
+    if domain not in config.accounts:
         raise ValueError(f"unknown account domain: {domain}")
 
-    readers = sorted(acl.readers_for_account(account, config.teams, users))
+    patched = 0
 
-    document_ids = set()
-    for path in gcs.list_prefix(f"approved/{domain}/"):
-        if path.endswith("message.html"):
-            document_ids.add(path.split("/")[3])
-        elif "/attachments/" in path:
-            filename = path.rsplit("/", 1)[-1]
-            document_ids.add(filename.rsplit(".", 1)[0])
+    for channel_id, channel in config.slack_channels.items():
+        if channel.account_domain != domain:
+            continue
+        readers = sorted(acl.slack_readers(channel_id, config))
+        for document_id in collect_document_paths(f"approved/{domain}/slack/{channel_id}/"):
+            gemini.patch_acl(document_id, readers)
+            patched += 1
 
-    for document_id in document_ids:
+    for document_id in collect_document_paths(f"approved/{domain}/gmail/"):
+        owners = _merge_owner(document_id, None)
+        readers = sorted(acl.gmail_readers(owners, config))
         gemini.patch_acl(document_id, readers)
+        patched += 1
 
-    return {"domain": domain, "documents_patched": len(document_ids)}
+    return {"domain": domain, "documents_patched": patched}

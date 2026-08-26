@@ -81,10 +81,10 @@ def build_authorization_url() -> str:
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
 
 
-def _upsert_new_user(email: str, gmail_secret_resource_name: str, default_team: str) -> None:
+def _upsert_new_user(email: str, gmail_secret_resource_name: str) -> None:
     def mutate(existing: Optional[dict]) -> dict:
         if existing is None:
-            return UserRecord(teams=[default_team], gmail_secret=gmail_secret_resource_name).model_dump()
+            return UserRecord(gmail_secret=gmail_secret_resource_name).model_dump()
         existing["gmail_secret"] = gmail_secret_resource_name
         return existing
 
@@ -145,7 +145,7 @@ def handle_callback(code: str, state: str) -> str:
     resource_name = secret_manager.get_or_create_user_secret(secret_id)
     secret_manager.add_version(resource_name, refresh_token)
 
-    _upsert_new_user(email, resource_name, config.default_team)
+    _upsert_new_user(email, resource_name)
 
     try:
         gmail_ingestion.run_initial_scan(email, resource_name, config)

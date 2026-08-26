@@ -1,68 +1,74 @@
-from app.models import AccountConfig, TeamConfig, UserRecord
-from app.policy.acl import readers_for_account, team_ancestors
-
-TEAMS = {
-    "commercial": TeamConfig(parent=None),
-    "enterprise": TeamConfig(parent="commercial"),
-    "enterprise-north": TeamConfig(parent="enterprise"),
-    "enterprise-south": TeamConfig(parent="enterprise"),
-    "base": TeamConfig(parent="commercial"),
-}
-
-USERS = {
-    "north@devx.com": UserRecord(teams=["enterprise-north"]),
-    "south@devx.com": UserRecord(teams=["enterprise-south"]),
-    "enterprise-lead@devx.com": UserRecord(teams=["enterprise"]),
-    "commercial-lead@devx.com": UserRecord(teams=["commercial"]),
-    "new-user@devx.com": UserRecord(teams=["base"]),
-    "specialist@devx.com": UserRecord(teams=["base"]),
-    "contractor@devx.com": UserRecord(teams=["base"]),
-}
+from app.models import AccountConfig, Config, SlackChannelConfig
+from app.policy import acl
 
 
-def test_team_ancestors():
-    assert team_ancestors("enterprise-north", TEAMS) == ["enterprise", "commercial"]
-    assert team_ancestors("commercial", TEAMS) == []
-
-
-def test_parent_and_ancestors_see_descendant_account():
-    account = AccountConfig(name="HT", teams=["enterprise-north"])
-    readers = readers_for_account(account, TEAMS, USERS)
-    assert "north@devx.com" in readers
-    assert "enterprise-lead@devx.com" in readers
-    assert "commercial-lead@devx.com" in readers
-
-
-def test_sibling_team_is_isolated():
-    account = AccountConfig(name="HT", teams=["enterprise-north"])
-    readers = readers_for_account(account, TEAMS, USERS)
-    assert "south@devx.com" not in readers
-
-
-def test_base_is_isolated_from_other_branches():
-    account = AccountConfig(name="HT", teams=["enterprise-north"])
-    readers = readers_for_account(account, TEAMS, USERS)
-    assert "new-user@devx.com" not in readers
-
-
-def test_allow_users_grants_explicit_access():
-    account = AccountConfig(name="HT", teams=["enterprise-north"], allow_users=["specialist@devx.com"])
-    readers = readers_for_account(account, TEAMS, USERS)
-    assert "specialist@devx.com" in readers
-
-
-def test_deny_always_wins_even_over_team_membership():
-    account = AccountConfig(name="HT", teams=["enterprise-north"], deny_users=["north@devx.com"])
-    readers = readers_for_account(account, TEAMS, USERS)
-    assert "north@devx.com" not in readers
-
-
-def test_deny_wins_over_allow():
-    account = AccountConfig(
-        name="HT",
-        teams=["enterprise-north"],
-        allow_users=["contractor@devx.com"],
-        deny_users=["contractor@devx.com"],
+def _config(**overrides) -> Config:
+    data = dict(
+        version=1,
+        internal_domains=["devx.com"],
+        superusers=["yash@devx.com"],
+        poc_backfill_days=3,
+        attachment_max_bytes=100,
+        accounts={"hindustantimes.com": AccountConfig(name="HT")},
+        slack_channels={
+            "C1": SlackChannelConfig(name="commercial-pursuit", account_domain="hindustantimes.com")
+        },
     )
-    readers = readers_for_account(account, TEAMS, USERS)
-    assert "contractor@devx.com" not in readers
+    data.update(overrides)
+    return Config(**data)
+
+
+def _stub_members(monkeypatch, emails):
+    monkeypatch.setattr(acl.slack_client, "channel_member_emails", lambda channel_id: emails)
+
+
+def test_slack_readers_are_channel_members(monkeypatch):
+    _stub_members(monkeypatch, ["navya@devx.com", "someone@devx.com"])
+    readers = acl.slack_readers("C1", _config())
+    assert "navya@devx.com" in readers
+    assert "someone@devx.com" in readers
+
+
+def test_slack_readers_always_include_superusers(monkeypatch):
+    _stub_members(monkeypatch, ["navya@devx.com"])
+    readers = acl.slack_readers("C1", _config())
+    assert "yash@devx.com" in readers
+
+
+def test_non_member_is_not_a_reader(monkeypatch):
+    _stub_members(monkeypatch, ["navya@devx.com"])
+    readers = acl.slack_readers("C1", _config())
+    assert "outsider@devx.com" not in readers
+
+
+def test_external_guest_members_are_excluded(monkeypatch):
+    _stub_members(monkeypatch, ["navya@devx.com", "guest@client-corp.com"])
+    readers = acl.slack_readers("C1", _config())
+    assert "guest@client-corp.com" not in readers
+
+
+def test_slack_member_emails_are_normalized(monkeypatch):
+    _stub_members(monkeypatch, ["  Navya@DevX.com "])
+    readers = acl.slack_readers("C1", _config())
+    assert "navya@devx.com" in readers
+
+
+def test_gmail_readers_are_owners_plus_superusers():
+    readers = acl.gmail_readers(["navya@devx.com"], _config())
+    assert readers == {"navya@devx.com", "yash@devx.com"}
+
+
+def test_gmail_readers_multiple_owners():
+    readers = acl.gmail_readers(["a@devx.com", "b@devx.com"], _config())
+    assert {"a@devx.com", "b@devx.com", "yash@devx.com"} == readers
+
+
+def test_gmail_readers_no_owners_is_superusers_only():
+    readers = acl.gmail_readers([], _config())
+    assert readers == {"yash@devx.com"}
+
+
+def test_no_superusers_configured(monkeypatch):
+    _stub_members(monkeypatch, ["navya@devx.com"])
+    readers = acl.slack_readers("C1", _config(superusers=[]))
+    assert readers == {"navya@devx.com"}

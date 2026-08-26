@@ -39,16 +39,23 @@ def save_state(email: str, state: GmailState) -> None:
 
 
 def _write_evidence_and_queue(
-    account_domain: str, document: email_document.EmailDocument
+    account_domain: str, document: email_document.EmailDocument, owner_email: str
 ) -> None:
     path = f"approved/{account_domain}/gmail/{document.document_id}/message.html"
     gcs.write_bytes(path, document.html.encode("utf-8"), content_type="text/html")
     gcs.write_pending_operation(
-        PendingOperation(operation="upsert", document_id=document.document_id, content_uri=gcs.content_uri(path))
+        PendingOperation(
+            operation="upsert",
+            document_id=document.document_id,
+            content_uri=gcs.content_uri(path),
+            owner_email=owner_email,
+        )
     )
 
 
-def _process_attachments(service, message_id: str, account_domain: str, parent_document_id: str, max_bytes: int) -> None:
+def _process_attachments(
+    service, message_id: str, account_domain: str, parent_document_id: str, max_bytes: int, owner_email: str
+) -> None:
     full = gmail_client.get_full(service, message_id)
     for part in mime.list_attachment_parts(full.get("payload", {})):
         ext = mime.extension_for_mime(part["mime_type"])
@@ -82,11 +89,16 @@ def _process_attachments(service, message_id: str, account_domain: str, parent_d
             logger.warning("gmail_attachment_write_failed")
             continue
         gcs.write_pending_operation(
-            PendingOperation(operation="upsert", document_id=attachment_document_id, content_uri=gcs.content_uri(path))
+            PendingOperation(
+                operation="upsert",
+                document_id=attachment_document_id,
+                content_uri=gcs.content_uri(path),
+                owner_email=owner_email,
+            )
         )
 
 
-def _approve_and_process(service, message_id: str, config: Config) -> None:
+def _approve_and_process(service, message_id: str, config: Config, owner_email: str) -> None:
     headers = gmail_client.get_metadata(service, message_id)
     account_domain = accounts.match_gmail_account(headers, config.accounts.keys())
     if account_domain is None:
@@ -106,8 +118,10 @@ def _approve_and_process(service, message_id: str, config: Config) -> None:
         body_mime_type=body["mime_type"],
         body_text=body["text"],
     )
-    _write_evidence_and_queue(account_domain, document)
-    _process_attachments(service, message_id, account_domain, document.document_id, config.attachment_max_bytes)
+    _write_evidence_and_queue(account_domain, document, owner_email)
+    _process_attachments(
+        service, message_id, account_domain, document.document_id, config.attachment_max_bytes, owner_email
+    )
 
 
 def run_initial_scan(email: str, gmail_secret: str, config: Config) -> None:
@@ -115,7 +129,7 @@ def run_initial_scan(email: str, gmail_secret: str, config: Config) -> None:
     message_ids = gmail_client.list_message_ids(service, f"newer_than:{config.poc_backfill_days}d")
     for message_id in message_ids:
         try:
-            _approve_and_process(service, message_id, config)
+            _approve_and_process(service, message_id, config, email)
         except Exception:
             logger.exception("gmail_message_processing_failed")
     history_id = gmail_client.get_latest_history_id(service)
@@ -140,7 +154,7 @@ def run_incremental_scan(email: str, gmail_secret: str, config: Config) -> None:
 
     for message_id in message_ids:
         try:
-            _approve_and_process(service, message_id, config)
+            _approve_and_process(service, message_id, config, email)
         except Exception:
             logger.exception("gmail_message_processing_failed")
 
