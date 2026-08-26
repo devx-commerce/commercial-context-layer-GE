@@ -48,8 +48,10 @@ def _is_duplicate_event(event_id: str) -> bool:
     return False
 
 
-def _message_path(account_domain: str, document_id: str) -> str:
-    return f"approved/{account_domain}/slack/{document_id}/message.html"
+def _message_path(account_domain: str, channel_id: str, document_id: str) -> str:
+    # Channel ID is part of the layout so ACL resync/reindex jobs can find every
+    # document of one channel by prefix alone.
+    return f"approved/{account_domain}/slack/{channel_id}/{document_id}/message.html"
 
 
 def _queue_upsert(document_id: str, path: str) -> None:
@@ -82,7 +84,7 @@ def _handle_message(event: dict, team_id: str, config: Config) -> None:
         thread_ts=event.get("thread_ts"),
         resolved_text=resolved_text,
     )
-    path = _message_path(channel.account_domain, document.document_id)
+    path = _message_path(channel.account_domain, channel_id, document.document_id)
     gcs.write_bytes(path, document.html.encode("utf-8"), content_type="text/html")
     _queue_upsert(document.document_id, path)
 
@@ -116,10 +118,27 @@ def _handle_message_deleted(event: dict, team_id: str, config: Config) -> None:
     if channel is None or not deleted_ts:
         return
     document_id = slack_document.compute_document_id(team_id, channel_id, deleted_ts)
-    path = _message_path(channel.account_domain, document_id)
+    path = _message_path(channel.account_domain, channel_id, document_id)
     gcs.write_pending_operation(
         PendingOperation(operation="delete", document_id=document_id, content_uri=gcs.content_uri(path))
     )
+
+
+def _queue_channel_acl_resync(channel_id: Optional[str], config: Config) -> None:
+    """A membership change in a whitelisted channel re-derives the ACL of every
+    document in that channel via the pending queue (process-pending job)."""
+    if not channel_id or channel_id not in config.slack_channels:
+        return
+    try:
+        gcs.write_pending_operation(
+            PendingOperation(
+                operation="resync_channel_acl",
+                document_id=f"resync:{channel_id}",
+                slack_channel_id=channel_id,
+            )
+        )
+    except Exception:
+        logger.exception("slack_membership_resync_queue_failed")
 
 
 def _ts_to_iso(ts: str) -> str:
@@ -143,6 +162,10 @@ def handle_event_payload(payload: dict, config: Config) -> Optional[dict]:
     event_type = event.get("type")
     subtype = event.get("subtype")
     team_id = payload.get("team_id", "")
+
+    if event_type in ("member_joined_channel", "member_left_channel"):
+        _queue_channel_acl_resync(event.get("channel"), config)
+        return None
 
     if event_type != "message":
         return None

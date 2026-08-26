@@ -1,27 +1,17 @@
 {
   "version": 1,
-  "internal_domains": ["devx.com"],
-  "default_team": "base",
-  "poc_backfill_days": 7,
+  "internal_domains": ["devxlabs.ai"],
+  "superusers": ["yash@devxlabs.ai"],
+  "poc_backfill_days": 3,
   "attachment_max_bytes": 20971520,
-  "teams": {
-    "commercial": { "parent": null },
-    "enterprise": { "parent": "commercial" },
-    "enterprise-north": { "parent": "enterprise" },
-    "enterprise-south": { "parent": "enterprise" },
-    "base": { "parent": "commercial" }
-  },
   "accounts": {
     "hindustantimes.com": {
-      "name": "Hindustan Times",
-      "teams": ["enterprise-north"],
-      "allow_users": ["specialist@devx.com"],
-      "deny_users": ["contractor@devx.com"]
+      "name": "Hindustan Times"
     }
   },
   "slack_channels": {
-    "C0123456789": {
-      "name": "ext-hindustan-times",
+    "C0BSD35TS8M": {
+      "name": "commercial-context-layer-poc",
       "account_domain": "hindustantimes.com",
       "private": false
     }

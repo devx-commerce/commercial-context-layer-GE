@@ -7,7 +7,7 @@ profiles must not be persisted in GCS"). Nothing here writes to GCS.
 
 import re
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 from slack_sdk import WebClient
@@ -16,7 +16,10 @@ from app.settings import require, settings
 from app.storage import secret_manager
 
 _USER_CACHE_TTL_SECONDS = 15 * 60
+_MEMBER_CACHE_TTL_SECONDS = 5 * 60
 _user_cache: Dict[str, Tuple[str, float]] = {}
+_email_cache: Dict[str, Tuple[Optional[str], float]] = {}
+_member_cache: Dict[str, Tuple[List[str], float]] = {}
 _client: Optional[WebClient] = None
 _signing_secret: Optional[str] = None
 
@@ -62,6 +65,52 @@ def resolve_user_name(user_id: str) -> str:
 
 def resolve_mentions(text: str) -> str:
     return _MENTION_RE.sub(lambda m: f"@{resolve_user_name(m.group(1))}", text)
+
+
+def resolve_user_email(user_id: str) -> Optional[str]:
+    """The user's workspace email (profile.email), or None for bots/apps or when
+    the token lacks users:read.email. Cached in-process with a TTL — never
+    persisted, same contract as resolve_user_name."""
+    cached = _email_cache.get(user_id)
+    now = time.monotonic()
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    email: Optional[str] = None
+    try:
+        response = get_client().users_info(user=user_id)
+        user = response["user"]
+        if not user.get("is_bot") and user.get("id") != "USLACKBOT":
+            raw = user.get("profile", {}).get("email")
+            email = raw.strip().lower() if raw else None
+    except Exception:
+        email = None
+
+    _email_cache[user_id] = (email, now + _USER_CACHE_TTL_SECONDS)
+    return email
+
+
+def channel_member_emails(channel_id: str) -> List[str]:
+    """Emails of the channel's current human members, via conversations.members
+    (paginated) + users.info. Cached briefly so a burst of upserts for one
+    channel doesn't hammer the Slack API."""
+    cached = _member_cache.get(channel_id)
+    now = time.monotonic()
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    member_ids: List[str] = []
+    cursor: Optional[str] = None
+    while True:
+        response = get_client().conversations_members(channel=channel_id, cursor=cursor, limit=200)
+        member_ids.extend(response.get("members", []))
+        cursor = (response.get("response_metadata") or {}).get("next_cursor") or None
+        if not cursor:
+            break
+
+    emails = sorted({e for e in (resolve_user_email(uid) for uid in member_ids) if e})
+    _member_cache[channel_id] = (emails, now + _MEMBER_CACHE_TTL_SECONDS)
+    return emails
 
 
 def join_channel(channel_id: str) -> dict:

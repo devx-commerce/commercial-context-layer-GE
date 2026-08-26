@@ -10,30 +10,35 @@ Gmail/Slack, just re-pushed to Gemini Enterprise.
 
 from app.config_loader import load_config_and_users
 from app.indexing import gemini
-from app.jobs.pending_index import _mime_type_for_path, _recover_title
+from app.jobs.pending_index import (
+    _merge_owner,
+    _mime_type_for_path,
+    _recover_title,
+    collect_document_paths,
+)
 from app.policy import acl
 from app.storage import gcs
 
 
 def run(domain: str) -> dict:
-    config, users, _ = load_config_and_users()
-    account = config.accounts.get(domain)
-    if account is None:
+    config, _, _ = load_config_and_users()
+    if domain not in config.accounts:
         raise ValueError(f"unknown account domain: {domain}")
 
-    readers = sorted(acl.readers_for_account(account, config.teams, users))
+    backfilled = 0
 
-    paths_by_document_id = {}
-    for path in gcs.list_prefix(f"approved/{domain}/"):
-        if path.endswith("message.html"):
-            paths_by_document_id[path.split("/")[3]] = path
-        elif "/attachments/" in path:
-            filename = path.rsplit("/", 1)[-1]
-            paths_by_document_id[filename.rsplit(".", 1)[0]] = path
+    for channel_id, channel in config.slack_channels.items():
+        if channel.account_domain != domain:
+            continue
+        readers = sorted(acl.slack_readers(channel_id, config))
+        for document_id, path in collect_document_paths(f"approved/{domain}/slack/{channel_id}/").items():
+            gemini.upsert(document_id, gcs.content_uri(path), _mime_type_for_path(path), _recover_title(path), readers)
+            backfilled += 1
 
-    for document_id, path in paths_by_document_id.items():
-        title = _recover_title(path)
-        mime_type = _mime_type_for_path(path)
-        gemini.upsert(document_id, gcs.content_uri(path), mime_type, title, readers)
+    for document_id, path in collect_document_paths(f"approved/{domain}/gmail/").items():
+        owners = _merge_owner(document_id, None)
+        readers = sorted(acl.gmail_readers(owners, config))
+        gemini.upsert(document_id, gcs.content_uri(path), _mime_type_for_path(path), _recover_title(path), readers)
+        backfilled += 1
 
-    return {"domain": domain, "documents_backfilled": len(paths_by_document_id)}
+    return {"domain": domain, "documents_backfilled": backfilled}
