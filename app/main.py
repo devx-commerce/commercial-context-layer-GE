@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from app.auth.gmail_oauth import OAuthError, build_authorization_url, handle_callback
 from app.auth.scheduler_auth import require_scheduler_auth
 from app.config_loader import ConfigError, load_config_and_users
-from app.jobs import gmail_poll, pending_index, reindex_domain
+from app.jobs import backfill_domain, gmail_poll, pending_index, reindex_domain
 from app.sources import slack_client
 from app.sources.slack_ingestion import handle_event_payload, verify_signature
 
@@ -85,5 +85,13 @@ def process_pending() -> dict:
 def reindex(domain: str = Query(...)) -> dict:
     try:
         return reindex_domain.run(domain)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/internal/backfill-domain", dependencies=[Depends(require_scheduler_auth)])
+def backfill(domain: str = Query(...)) -> dict:
+    try:
+        return backfill_domain.run(domain)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
