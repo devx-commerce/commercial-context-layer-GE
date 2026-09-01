@@ -13,6 +13,17 @@ from pydantic import BaseModel, Field
 
 class AccountConfig(BaseModel):
     name: str
+    # Exact sender/recipient addresses approved for this account in addition to
+    # its domain (build spec's exact-domain-match rule still applies on top of
+    # this — see app.policy.accounts.match_gmail_account). Lets an account
+    # admit mail from one specific address on a domain it doesn't otherwise
+    # own, e.g. a single verified demo sender.
+    allowed_senders: List[str] = Field(default_factory=list)
+    # Internal users granted read access to every document under this account
+    # regardless of Slack channel membership or Gmail mailbox ownership — see
+    # app.policy.acl. Superusers already see every account; this is the
+    # narrower, per-account equivalent.
+    approved_viewers: List[str] = Field(default_factory=list)
 
 
 class SlackChannelConfig(BaseModel):

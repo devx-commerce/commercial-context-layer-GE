@@ -30,14 +30,14 @@ def run(domain: str) -> dict:
     for channel_id, channel in config.slack_channels.items():
         if channel.account_domain != domain:
             continue
-        readers = sorted(acl.slack_readers(channel_id, config))
+        readers = sorted(acl.slack_readers(channel_id, domain, config))
         for document_id, path in collect_document_paths(f"approved/{domain}/slack/{channel_id}/").items():
             gemini.upsert(document_id, gcs.content_uri(path), _mime_type_for_path(path), _recover_title(path), readers)
             backfilled += 1
 
     for document_id, path in collect_document_paths(f"approved/{domain}/gmail/").items():
         owners = _merge_owner(document_id, None)
-        readers = sorted(acl.gmail_readers(owners, config))
+        readers = sorted(acl.gmail_readers(owners, domain, config))
         gemini.upsert(document_id, gcs.content_uri(path), _mime_type_for_path(path), _recover_title(path), readers)
         backfilled += 1
 

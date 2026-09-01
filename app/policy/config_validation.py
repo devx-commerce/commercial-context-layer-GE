@@ -61,9 +61,26 @@ def validate(config: Config, users: Optional[Dict[str, UserRecord]] = None) -> L
         elif email.split("@", 1)[1] not in internal_domains:
             errors.append(f"superusers: {email!r} is not in internal_domains")
 
-    for domain in config.accounts:
+    sender_owners: Dict[str, str] = {}
+    for domain, account in config.accounts.items():
         if not _is_normalized_domain(domain):
             errors.append(f"accounts: {domain!r} is not a normalized domain")
+        for sender in account.allowed_senders:
+            if not _is_normalized_email(sender):
+                errors.append(f"accounts.{domain}.allowed_senders: {sender!r} is not a normalized email")
+                continue
+            if sender in sender_owners:
+                errors.append(
+                    f"accounts.{domain}.allowed_senders: {sender!r} is also allowed by "
+                    f"account {sender_owners[sender]!r} — ambiguous, will always be discarded"
+                )
+            else:
+                sender_owners[sender] = domain
+        for viewer in account.approved_viewers:
+            if not _is_normalized_email(viewer):
+                errors.append(f"accounts.{domain}.approved_viewers: {viewer!r} is not a normalized email")
+            elif viewer.split("@", 1)[1] not in internal_domains:
+                errors.append(f"accounts.{domain}.approved_viewers: {viewer!r} is not in internal_domains")
 
     for channel_id, channel in config.slack_channels.items():
         if channel.account_domain not in config.accounts:

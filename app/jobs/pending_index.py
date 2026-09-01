@@ -63,12 +63,12 @@ def _split_approved_path(path: str) -> Tuple[str, str, List[str]]:
 
 
 def _readers_for_path(path: str, config: Config, owner_email: Optional[str], document_id: str) -> List[str]:
-    _, source, rest = _split_approved_path(path)
+    account_domain, source, rest = _split_approved_path(path)
     if source == "slack":
         channel_id = rest[0]
-        return sorted(acl.slack_readers(channel_id, config))
+        return sorted(acl.slack_readers(channel_id, account_domain, config))
     owners = _merge_owner(document_id, owner_email)
-    return sorted(acl.gmail_readers(owners, config))
+    return sorted(acl.gmail_readers(owners, account_domain, config))
 
 
 def _recover_title(path: str) -> str:
@@ -143,7 +143,7 @@ def _handle_fetch_slack_attachment(op: PendingOperation) -> None:
         path, data, content_type=mime_type, content_disposition=f'attachment; filename="{normalized_filename}"'
     )
 
-    readers = sorted(acl.slack_readers(channel_id, config))
+    readers = sorted(acl.slack_readers(channel_id, channel.account_domain, config))
     gemini.upsert(attachment_document_id, gcs.content_uri(path), mime_type, normalized_filename, readers)
 
 
@@ -169,7 +169,7 @@ def _handle_resync_channel_acl(op: PendingOperation) -> None:
         logger.warning("pending_resync_unknown_channel")
         return
 
-    readers = sorted(acl.slack_readers(channel_id, config))
+    readers = sorted(acl.slack_readers(channel_id, channel.account_domain, config))
     document_ids = collect_document_paths(f"approved/{channel.account_domain}/slack/{channel_id}/")
     for document_id in document_ids:
         gemini.patch_acl(document_id, readers)

@@ -1,19 +1,31 @@
 {
   "version": 1,
   "internal_domains": ["devxlabs.ai"],
-  "superusers": ["yash@devxlabs.ai"],
+  "superusers": ["yash@devxlabs.ai", "nitin.singh@devxlabs.ai"],
   "poc_backfill_days": 3,
   "attachment_max_bytes": 20971520,
   "accounts": {
-    "hindustantimes.com": {
-      "name": "Hindustan Times"
+    "nike.com": {
+      "name": "Nike",
+      "allowed_senders": ["nike-commercial@devxlabs.ai"],
+      "approved_viewers": ["navya.agarwal@devxlabs.ai"]
+    },
+    "sephora.com": {
+      "name": "Sephora",
+      "allowed_senders": ["sephora-commercial@devxlabs.ai"],
+      "approved_viewers": ["navya.agarwal@devxlabs.ai", "mahin@devxlabs.ai"]
     }
   },
   "slack_channels": {
-    "C0BSD35TS8M": {
-      "name": "commercial-context-layer-poc",
-      "account_domain": "hindustantimes.com",
-      "private": false
+    "C0BU6G1ED9A": {
+      "name": "nike-commercial",
+      "account_domain": "nike.com",
+      "private": true
+    },
+    "C0BUX77QDNU": {
+      "name": "sephora-commercial",
+      "account_domain": "sephora.com",
+      "private": true
     }
   }
 }

@@ -100,7 +100,7 @@ def _process_attachments(
 
 def _approve_and_process(service, message_id: str, config: Config, owner_email: str) -> None:
     headers = gmail_client.get_metadata(service, message_id)
-    account_domain = accounts.match_gmail_account(headers, config.accounts.keys())
+    account_domain = accounts.match_gmail_account(headers, config.accounts)
     if account_domain is None:
         logger.info("gmail_messages_discarded=1")
         return

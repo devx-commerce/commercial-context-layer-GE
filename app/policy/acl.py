@@ -1,13 +1,15 @@
 """ACL algorithm (v2) — channel-membership based, with a superuser override.
 
     slack readers  = (live channel members whose email is in internal_domains)
-                     UNION superusers
+                     UNION account's approved_viewers UNION superusers
     gmail readers  = (onboarded mailboxes the document was ingested from)
-                     UNION superusers
+                     UNION account's approved_viewers UNION superusers
 
 Slack membership is read live from the Slack API at index/patch time, never
 persisted. Superusers (config.superusers) can read every document regardless
-of channel membership or mailbox ownership.
+of account, channel membership, or mailbox ownership. approved_viewers is the
+per-account equivalent: configured on the account itself, it grants read access
+to every document under that one account only.
 """
 
 from typing import Iterable, Set
@@ -30,10 +32,17 @@ def superusers(config: Config) -> Set[str]:
     return {email.strip().lower() for email in config.superusers}
 
 
-def slack_readers(channel_id: str, config: Config) -> Set[str]:
+def _approved_viewers(account_domain: str, config: Config) -> Set[str]:
+    account = config.accounts.get(account_domain)
+    if account is None:
+        return set()
+    return {email.strip().lower() for email in account.approved_viewers}
+
+
+def slack_readers(channel_id: str, account_domain: str, config: Config) -> Set[str]:
     members = slack_client.channel_member_emails(channel_id)
-    return _internal_only(members, config) | superusers(config)
+    return _internal_only(members, config) | _approved_viewers(account_domain, config) | superusers(config)
 
 
-def gmail_readers(owners: Iterable[str], config: Config) -> Set[str]:
-    return {o.strip().lower() for o in owners} | superusers(config)
+def gmail_readers(owners: Iterable[str], account_domain: str, config: Config) -> Set[str]:
+    return {o.strip().lower() for o in owners} | _approved_viewers(account_domain, config) | superusers(config)
